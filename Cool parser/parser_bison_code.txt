@@ -1,0 +1,580 @@
+/*
+*  cool.y
+*              Parser definition for the COOL language.
+*
+*/
+%{
+  #include <iostream>
+  #include "cool-tree.h"
+  #include "stringtab.h"
+  #include "utilities.h"
+  
+  extern char *curr_filename;
+  
+  
+  /* Locations */
+  #define YYLTYPE int              /* the type of locations */
+  #define cool_yylloc curr_lineno  /* use the curr_lineno from the lexer
+  for the location of tokens */
+    
+    extern int node_lineno;          /* set before constructing a tree node
+    to whatever you want the line number
+    for the tree node to be */
+      
+      
+      #define YYLLOC_DEFAULT(Current, Rhs, N)         \
+      Current = Rhs[1];                             \
+      node_lineno = Current;
+    
+    
+    #define SET_NODELOC(Current)  \
+    node_lineno = Current;
+    
+    /* IMPORTANT NOTE ON LINE NUMBERS
+    *********************************
+    * The above definitions and macros cause every terminal in your grammar to 
+    * have the line number supplied by the lexer. The only task you have to
+    * implement for line numbers to work correctly, is to use SET_NODELOC()
+    * before constructing any constructs from non-terminals in your grammar.
+    * Example: Consider you are matching on the following very restrictive 
+    * (fictional) construct that matches a plus between two integer constants. 
+    * (SUCH A RULE SHOULD NOT BE  PART OF YOUR PARSER):
+    
+    plus_consts	: INT_CONST '+' INT_CONST 
+    
+    * where INT_CONST is a terminal for an integer constant. Now, a correct
+    * action for this rule that attaches the correct line number to plus_const
+    * would look like the following:
+    
+    plus_consts	: INT_CONST '+' INT_CONST 
+    {
+      // Set the line number of the current non-terminal:
+      // ***********************************************
+      // You can access the line numbers of the i'th item with @i, just
+      // like you acess the value of the i'th exporession with $i.
+      //
+      // Here, we choose the line number of the last INT_CONST (@3) as the
+      // line number of the resulting expression (@$). You are free to pick
+      // any reasonable line as the line number of non-terminals. If you 
+      // omit the statement @$=..., bison has default rules for deciding which 
+      // line number to use. Check the manual for details if you are interested.
+      @$ = @3;
+      
+      
+      // Observe that we call SET_NODELOC(@3); this will set the global variable
+      // node_lineno to @3. Since the constructor call "plus" uses the value of 
+      // this global, the plus node will now have the correct line number.
+      SET_NODELOC(@3);
+      
+      // construct the result node:
+      $$ = plus(int_const($1), int_const($3));
+    }
+    
+    */
+    
+    
+    
+    void yyerror(char *s);        /*  defined below; called for each parse error */
+    extern int yylex();           /*  the entry point to the lexer  */
+    
+    /************************************************************************/
+    /*                DONT CHANGE ANYTHING IN THIS SECTION                  */
+    
+    Program ast_root;	      /* the result of the parse  */
+    Classes parse_results;        /* for use in semantic analysis */
+    int omerrs = 0;               /* number of errors in lexing and parsing */
+    %}
+    
+    /* A union of all the types that can be the result of parsing actions. 
+	-> imamo 2 primitivna tipa -> symbol i boolena a ostali tipovi su PHYLUMI-> coolsupport-> 6.1 poglavlje*/
+    %union {
+      Boolean boolean;
+      Symbol symbol;
+      Program program;
+      Class_ class_;
+      Classes classes;
+      Feature feature;
+      Features features;
+      Formal formal;
+      Formals formals;
+      Case case_;
+      Cases cases;
+      Expression expression;
+      Expressions expressions;
+      char *error_msg;
+    }
+    
+    /* 
+    Declare the terminals; a few have types for associated lexemes.
+    The token ERROR is never used in the parser; thus, it is a parse
+    error when the lexer returns it.
+    
+    The integer following token declaration is the numeric constant used
+    to represent that token internally.  Typically, Bison generates these
+    on its own, but we give explicit numbers to prevent version parity
+    problems (bison 1.25 and earlier start at 258, later versions -- at
+    257)
+    */
+    %token CLASS 258 ELSE 259 FI 260 IF 261 IN 262 
+    %token INHERITS 263 LET 264 LOOP 265 POOL 266 THEN 267 WHILE 268
+    %token CASE 269 ESAC 270 OF 271 DARROW 272 NEW 273 ISVOID 274
+    %token <symbol>  STR_CONST 275 INT_CONST 276 
+    %token <boolean> BOOL_CONST 277
+    %token <symbol>  TYPEID 278 OBJECTID 279 
+    %token ASSIGN 280 NOT 281 LE 282 ERROR 283 LET_PRECEDENCE 284
+    
+    /*  DON'T CHANGE ANYTHING ABOVE THIS LINE, OR YOUR PARSER WONT WORK       */
+    /**************************************************************************/
+    
+    /* Complete the nonterminal list below, giving a type for the semantic
+    value of each non terminal. (See section 3.6 in the bison 
+    documentation for details). */
+    
+    /* Declare types for the grammar's non-terminals. */
+    %type <program> program
+    %type <classes> class_list
+    %type <class_> class
+    %type <features> feature_list
+    %type <feature> feature
+    %type <formal> _formal
+    %type <formals> optional_formal_arguments
+    %type <expression> expr
+    %type <expressions> dispatch_arguments
+    %type <expressions> no_dispatch_arguments
+    %type <expressions> one_or_more_dispatch_arguments
+    %type <expressions> expression_list
+    %type <expression> let_expression
+    %type <cases> case_branches
+    
+    /* Precedence declarations go here. */
+    /*Cool manual 11.1 Precedence*/
+    /*All binary operations are left-associative, with the exception of assignment, which is right-associative,and the three comparison operations, which do not associate.	
+    NONASSOC-> ne asociraju -> nije dozvoljeno ulancavanje-> unarni operatori + operatori usporedbe a<b<c, ~b~c(negacija), .1.1,... -> error(bez oporavka) */
+    	
+	%nonassoc LET_PRECEDENCE/*za rjesavanje shift/reduce konflikta let naredbe korištenjem bisonovog Context-Dependent Precedence mehanizma -> COLLMANUAL KAZE DA SE EXPRESSION OD LET PROTEZE DO KRAJA KOLIKO GOD MOZE -> The <expr> of a let extends as far (encompasses as many tokens) as the grammar allows.*/
+				/*iz toga zaključujemo da se želimo shiftat prema desno, međutim parser kad dode do expressiona može i shiftat dalje ali može i reducat s nekom od produkcija od let_expression -> korištenje bison %prec mehanizma recemo mu da ne reduca nego da nastavi dalje shiftat*/
+	%right ASSIGN
+	%nonassoc NOT
+	%nonassoc LE '<' '='
+	%left '+' '-'
+	%left '*' '/'
+	%nonassoc ISVOID
+	%nonassoc '~'
+	%nonassoc '@'
+	%nonassoc '.'
+    %%
+    /* 
+    Save the root of the abstract syntax tree in a global variable.
+    Program klasa je samo jedna i odgovara root čvoru ADST-a, PROGRAM JE LISTA KLASA i to BAREM 1 ČLA NISTE -> KLEENE+
+    */
+    program	: class_list	{ @$ = @1;SET_NODELOC(@1); ast_root = program($1); }
+    ;/*IDE NA KRAJ SVAKOG PRAVILA U POSEBNU LINIJU*/
+    
+    class_list
+    : class			/* single class -> jedini ili posljednji u nizu*/
+    {	 
+	$$ = single_Classes($1);
+    	parse_results = $$; /*parse_results -> sluzi kasnije za semanticku analizu*/
+	@$ = @1; /*NAZNACI BROJEVE LINIJE -> i globalni node_lineno sa SET_NODELOC i onaj pridružen AST čvoru odnosno trenutnon neterminalu s lijeve strane-> @$*/
+    	SET_NODELOC(@1);
+    }	
+    | class class_list	/* several classes -> spoji listu koju cemo kasnije stvorit i pridjelit class_list neterminalu i class član u zajedničku listu  */
+    { 
+	$$ = append_Classes(single_Classes($1),$2); 
+    	parse_results = $$;
+	@$ = @2;
+    	SET_NODELOC(@2);/*tenutno smo na desnoj klasi*/
+    }
+	/*Ako postoji greška u definiciji klase, ali je klasa ispravno završena, a sljedeća klasa je sintaktički ispravna, parser bi trebao uredno nastaviti parsirati slijedeću klasu*/
+	/*Krivo definirana klasa će spadati pod terminal token error a nakon ';' nastavimo parsirat iduću klasu ako je ona sintaticki ispravna, ovo pokriva slucjaeve kad imamo npr 3 krive zaredom i 4. dobru ili kad imamo losa-dobra-losa-dobra, nije moguc slucaj losa-dobra-losa*/
+    | error ';' class_list
+    {
+	$$ = $3; 
+    	parse_results = $$;
+	@$ = @3;
+    	SET_NODELOC(@3);
+    }
+    ;
+    
+    /* ako nema parenta odnosno nema INHERITS optional parametra onda defaltno nasljedujemo od defaultnog Object tipa */
+    class	: CLASS TYPEID '{' feature_list '}' ';'
+    { 
+	$$ = class_($2,idtable.add_string("Object"),$4,
+    	stringtable.add_string(curr_filename));
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    | CLASS TYPEID INHERITS TYPEID '{' feature_list '}' ';'
+    { 
+	$$ = class_($2,$4,$6,stringtable.add_string(curr_filename));
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    ;
+    
+    /* Feature list may be empty, but no empty features in list.-> u produkcijama feature neterminala NEMA SLUČAJA null/praznog feature clana tako da je ovo zadovoljeno */
+    feature_list:		/* empty */
+    {  
+	$$ = nil_Features(); 
+    }
+    | feature feature_list		/*ili barem 1 član*/
+    {
+	$$=append_Features(single_Features($1),$2); /*neterminal feature_list ce se isto u narednim produkcijama pretvorit u listu bilo sa append_Features ili single_Features*/
+	@$ = @1;
+    	SET_NODELOC(@1); /*trenutno na feature neterminalu*/
+    }
+    | error ';' feature_list /*jednako kao i kod expressiona unutar bloka parser se mora oporovati od greske unutar features liste*/
+    {
+	$$=$3;
+    	@$=@3;
+	SET_NODELOC(@3);
+    }
+    ;
+
+/*treba zavrsavat s ; jer je naveden kao [[feature;]] kod definicije liste featura*/
+    feature:	OBJECTID '(' optional_formal_arguments ')' ':' TYPEID '{' expr '}' ';' /*metoda*/
+    { 
+	$$=method($1,$3,$6,$8);
+	@$ = @1;
+    	SET_NODELOC(@1);
+	
+    }
+    | OBJECTID ':' TYPEID ';'	/*attribute-> bez assign expressiona*/		
+    {
+	$$=attr($1,$3,no_expr());
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    | OBJECTID ':' TYPEID ASSIGN expr ';'	/*attribute-> sa assign expressiona*/		
+    {
+	$$=attr($1,$3,$5);
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    ;
+
+    optional_formal_arguments:		/* empty */
+    {  
+	$$ = nil_Formals(); 
+    }	
+    | _formal			/*samo 1 argument ili posljednji u nizu argumenata*/		
+    {
+	$$ = single_Formals($1);
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    | _formal ',' optional_formal_arguments	/*vise argumenata odvojenih zarezom*/		
+    {
+	$$ = append_Formals(single_Formals($1),$3); 
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }   
+    ;
+
+/*stavljamo _formal kako bi izbjeli koliziju s formal() konstruktorom*/
+    _formal:	OBJECTID ':' TYPEID	
+    {
+	$$=formal($1,$3);
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    ;
+
+    expr:	OBJECTID ASSIGN expr	/*assignment expression tip*/
+    {
+	$$=assign($1,$3);
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }						/*DISPATCHES(pozivanje funkcija)-> coolmanual-> poglavlje 7.4 -> RAZLIKUJEMO 3 VRSTE*/
+    |	expr '@' TYPEID '.' OBJECTID '(' dispatch_arguments ')'	/*STATIC_DISPATCH S EKSPLICITNO DEFINIRANIM TIPOM*/
+    {
+	$$=static_dispatch($1,$3,$5,$7);
+	@$ = @1;/*postavi na liniju di se nalazi izraz ciji rezultat poziva funkciju*/
+    	SET_NODELOC(@1); 
+    }	
+    |	expr '.' OBJECTID '(' dispatch_arguments ')'	/*NORMAL DISPATCH BEZ EKSPLICITNO DEFINIRANOG TIPA -> NEMA type_name argumenta*/
+    {
+	$$=dispatch($1,$3,$5);
+	@$ = @1;/*postavi na liniju di se nalazi izraz ciji rezultat poziva funkciju*/
+    	SET_NODELOC(@1); 
+    }	
+    |	OBJECTID '(' dispatch_arguments ')'	/*NORMAL DISPATCH KOJI NEMA EKSPLICITNO DEFINIRAN expr ISPRED POZIVA FUNKCIJE kao u prethodnom slucaju(taj expr ce vratit objekt neki kreiran s produkijom expr -> OBJECTID)-> IMPLICITNO SE POSTAVLJA NA self -> prvi argument funkcije postavljamo na self -> self mora biti phylum tipa Expression -> kreiramo objekt sa object() konstruktorom kojem cemo kao argument proslijedit self simbol i dodati ga u tablicu identifikatora*/
+    {
+	$$=dispatch(object(idtable.add_string("self")),$1,$3);
+	@$ = @1;/*postavi na liniju di se nalazi ime funkcije koja se poziva*/
+    	SET_NODELOC(@1); 
+    }	
+    |	IF expr THEN expr ELSE expr FI		/*uvjet -> cond() konstruktor*/
+    {
+	$$=cond($2,$4,$6);
+	@$ = @1;/*postavi na liniju di se nalazi kljucna rijec IF*/
+    	SET_NODELOC(@1); 
+    }
+    |	WHILE expr LOOP expr POOL		/*while petlja -> loop() konstruktor*/
+    {
+	$$=loop($2,$4);
+	@$ = @1;/*postavi na liniju di se nalazi kljucna rijec WHILE*/
+    	SET_NODELOC(@1); 
+    }
+    |	'{' expression_list '}'		/*blok naredbi koje zavrsavaju s ; -> nije dozvoljen prazan blok  -> block() konstruktor*/
+    {
+	$$=block($2);
+	@$ = @1;/*postavi na liniju di se pojavljuje prva viticasta zagrada bloka*/
+    	SET_NODELOC(@1); 
+    }
+	/* LET izraz -> let() konstruktor ->  Note that the let constructor only allows ONE identifier.When parsing a let expression with multiple identifiers, it should be transformed into NESTED lets with single identifiers -> ako ima vise identifikatora ODVOJENIH ZAREZOM onda na mjesto expressiona u let konstruktoru stavljamo NOVI LET EXPRESSION KOJI KREIRAMO S KONSTRUKTOROM let i parametrima za taj identifikator*/
+	/*zakljucujemo da moramo ulancavat let expressione pa zato let izraz odvajamo u odovojeni let_expression NETERMINAL kako bi to mogli radit*/
+    |	LET let_expression
+    {
+	$$=$2;/*let expression neterminal ce obradit slucajeve let izraza s jednim ili vise identifikatora(u ovom slucaju ce bit nestani letovi) -> u svakom slucaju njegova semanticka vrijednost će biti definirana s let() konstruktorom*/
+	@$ = @1;/*postavi na liniju di se pojavljuje LET keyword*/
+    	SET_NODELOC(@1); 
+    }
+	/*case izraz sadrzi barem 1(ili vise) tzv. BRANCHEVA koji se rade s branch() konstruktorom phylum tipa Case -> lista Caseva s barem 1 clanom*/
+    |	CASE expr OF case_branches ESAC		/* CASE izraz -> typcase() konstruktor*/
+    {
+	$$=typcase($2,$4);
+	@$ = @1;/*postavi na liniju di se pojavljuje prva viticasta zagrada bloka*/
+    	SET_NODELOC(@1); 
+    }
+    |	NEW TYPEID		/* new izraz -> new_() konstruktor, _ da se sprijeci kolizija s nativnim new od C++*/
+    {
+	$$=new_($2);
+	@$ = @1;/*postavi na liniju di se pojavljuje new keyword*/
+    	SET_NODELOC(@1); 
+    }
+    |	ISVOID expr		/* isvoid izraz -> isvoid() konstruktor*/
+    {
+	$$=isvoid($2);
+	@$ = @1;/*postavi na liniju di se pojavljuje isvoid keyword*/
+    	SET_NODELOC(@1); 
+    }
+    |	expr '+' expr		/* zbrajanje -> plus() konstruktor*/
+    {
+	$$=plus($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje + znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	expr '-' expr		/* oduzimanje -> sub() konstruktor*/
+    {
+	$$=sub($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje - znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	expr '*' expr		/* mnozenje -> mul() konstruktor*/
+    {
+	$$=mul($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje * znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	expr '/' expr		/* dijeljenje -> divide() konstruktor*/
+    {
+	$$=divide($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje / znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	'~' expr		/* negacija -> neg() konstruktor*/
+    {
+	$$=neg($2);
+	@$ = @1;/*postavi na liniju di se pojavljuje ~ znak*/
+    	SET_NODELOC(@1); 
+    }
+    |	expr '<' expr		/* usporedba strogo manje -> lt() konstruktor*/
+    {
+	$$=lt($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje < znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	expr LE expr		/* usporedba manje ili jednako-> leq() konstruktor*/
+    {
+	$$=leq($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje <= znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	expr '=' expr		/* usporedba jednakosti -> eq() konstruktor*/
+    {
+	$$=eq($1,$3);
+	@$ = @2;/*postavi na liniju di se pojavljuje = znak*/
+    	SET_NODELOC(@2); 
+    }
+    |	NOT expr		/* usporedba nejednakosti/nije jednako, suprotno od = -> comp() konstruktor*/
+    {
+	$$=comp($2);
+	@$ = @1;/*postavi na liniju di se pojavljuje not*/
+    	SET_NODELOC(@1); 
+    }
+    |	'(' expr ')'	/* expresion u zagradama -> ovim ga postavljamo dbliye listovima stabla pa ce se kod rekurzivnog izvrsavanja od dna prema vrhu izvrsit prije izraza bez zagrada*/
+    {
+	$$=$2;
+	@$ = @1;/*postavi na liniju di se pojavluje prva otvorena zagrada (*/
+    	SET_NODELOC(@1); 
+    }
+    |	OBJECTID	/*expression moze bit sami OBJECTID odnosno identifikator, npr kod dispatchanja metoda reyultat expressiona mora biti OBJECTID -> object() konstruktor-> prima vrijednost OBJECTID tokena(on ima i klasu i vrijednost tokena)*/
+    {
+	$$=object($1);
+	@$ = @1;/*postavi na liniju di se pojavluje objectid*/
+    	SET_NODELOC(@1); 
+    }
+    |	INT_CONST	/*expression moze biti integer -> int_const() konstruktor*/
+    {
+	$$=int_const($1);/*vrijednost spremljena u inttable, ovo je token koji sadrzi klasu+vrijednost tokena-> bison $1 će uzet vrijednost*/
+	@$ = @1;/*postavi na liniju di se pojavluje zadani integer*/
+    	SET_NODELOC(@1); 
+    }
+    |	STR_CONST	/*expression moze biti string -> string_const() konstruktor*/
+    {
+	$$=string_const($1);
+	@$ = @1;/*postavi na liniju di se pojavljuje zadani string*/
+    	SET_NODELOC(@1); 
+    }
+    |	BOOL_CONST	/*expression moze bit boolean odnosno true ili false -> lekser ce vratit BOOL_CONST token di uoci true ili false*/
+    {
+	$$=bool_const($1);
+	@$ = @1;/*postavi na liniju di se pojavluje bool konstanta*/
+    	SET_NODELOC(@1); 
+    }
+
+    ;
+
+/*nema argumenata, 1 argument ili vise argumenata odvojenih zarezom UZ UVJET DA NAKON ZAREZA MORA IĆI expression, argument=expression*/
+    dispatch_arguments: no_dispatch_arguments
+    {  
+	$$ = $1; 
+    }
+    | one_or_more_dispatch_arguments
+    {  
+	$$ = $1; 
+	@$ = @1;
+    	SET_NODELOC(@1);
+    }
+    ;
+
+    no_dispatch_arguments:		/* empty */
+    {  
+	$$ = nil_Expressions(); 
+    }
+	
+    one_or_more_dispatch_arguments: expr			/*samo 1 dispatch argument ili posljednji u nizu dispatch argumenata*/		
+    {
+	$$ = single_Expressions($1);
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    | expr ',' one_or_more_dispatch_arguments	/*vise argumenata odvojenih zarezom*/		
+    {
+	$$ = append_Expressions(single_Expressions($1),$3); 
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    ;
+
+/*ne smi bit prazna, barem 1 expression, na kraju svakog expressiona treba biti ; -> OPCENITO EXPRESSIONI NE MORAJU ZAVRSAVAT S OVIM ZNAKOM ALI U ODREDENIM SITUACIJAMA KAO U OVOJ MORAJU. ZA FEATURE I CLASSLIST SMO OVE SIMBOLE DEFINIRALI U class i feature neterminalima ZATO STO ONI SVUGDI MORAJU ZAVRSIT S ;, KOD EXPRESSIONA TO NIJE SLUCAJ PA OVDE DEFINIRAMO DA MORA ZAVRSIT S ; */
+    expression_list:	expr ';'	/* jedan expression ili prvi u nizu expressiona */
+    {  
+	$$ = single_Expressions($1); 
+	@$ = @1;
+    	SET_NODELOC(@1); 
+    }
+    | expr ';' expression_list			/*vise expressiona*/
+    {
+	$$=append_Expressions(single_Expressions($1),$3);
+	@$ = @1;	/*postavi na liniju trenutnog expressiona*/
+    	SET_NODELOC(@1); 
+    }
+    | error ';' expression_list /*parser se mora oporavit u slucaju greski unutar bloka -> expression_list terminal definira niz naredbi unutar bloka, ako je greska u nekom izrazu nastavljamo parisrat sve dok postoji barem jedan iduci koji je ispravan*/
+    {
+	$$=$3;
+	@$ = @3;	/*postavi na liniju trenutnog expressiona*/
+    	SET_NODELOC(@3);
+    }
+    ;
+
+/*Kod parsiranja LETA parser se mora oporavit od pogreske ukoliko postoji error u nekom od tzv. bindinga(pocetni djelovi gdje se definiraju identifikatori koji ce se koristit u let expressionu -> u slucaju greske nastavi parsirat ALI SAMO U SLUCAJU DA TO NIJE JEDINI INDETIFIKATOR JER LET UVIJEK MORA UNIJETI BAREM 1 IDENTIFIKATOR-> ZADNJA PRODUKCIJA RJESAVA OVO*/
+    let_expression:	OBJECTID ':' TYPEID IN expr %prec LET_PRECEDENCE  /*let izraz s jednim identifikatorom I BEZ ASSIGN EXPR*/
+    {
+	$$=let($1,$3,no_expr(),$5);
+	@$ = @1;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@1); 
+    }
+    |	OBJECTID ':' TYPEID ASSIGN expr IN expr %prec LET_PRECEDENCE  /*let izraz s jednim identifikatorom I S ASSIGN EXPR*/
+    {
+	$$=let($1,$3,$5,$7);
+	@$ = @1;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@1); 
+    }
+    |	OBJECTID ':' TYPEID let_expression	/*BEZ ASSIGN EXPR,let izraz s VISE identifikatora -> ulancavamo ih na nacin da na kraj opet rekruzivno stavljamo let_expression neterminal, ako su ulancani onda ćemo koristit treći slučaj u kojem imamo identifikator na početku odvojen zarezon -> prije njega je bio početni -> tada njega pretvaramo takoder u let() expression i imamo 2 opcije -> 1)ako je on zadnji onda nakon njega dolaze IN expr i to je kraj, ako nije zadnji onda nastavljamo ulancavat sa let_expression neterminalom*/
+    {
+	$$=let($1,$3,no_expr(),$4);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @1;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@1);
+    }
+    |	OBJECTID ':' TYPEID ASSIGN expr let_expression	/*S ASSIGN EXPR,let izraz s VISE identifikatora -> ulancavamo ih na nacin da na kraj opet rekruzivno stavljamo let_expression neterminal, ako su ulancani onda ćemo koristit treći slučaj u kojem imamo identifikator na početku odvojen zarezon -> prije njega je bio početni -> tada njega pretvaramo takoder u let() expression i imamo 2 opcije -> 1)ako je on zadnji onda nakon njega dolaze IN expr i to je kraj, ako nije zadnji onda nastavljamo ulancavat sa let_expression neterminalom*/
+    {
+	$$=let($1,$3,$5,$6);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @1;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@1);
+    }
+    |	',' OBJECTID ':' TYPEID let_expression	/*BEZ ASSIGN EXPR,prethodi sa zarezom-> 2.,3. ili neki dalji identifikator + na kraju se nalazi let_expression -> ima ih još nakon njega -> nestaj te nakon njega tako da ih postavis u let() konstruktoru*/
+    {
+	$$=let($2,$4,no_expr(),$5);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @2;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@2);
+    }
+    |	',' OBJECTID ':' TYPEID ASSIGN expr let_expression	/*S ASSIGN EXPR,prethodi sa zarezom-> 2.,3. ili neki dalji identifikator + na kraju se nalazi let_expression -> ima ih još nakon njega -> nestaj te nakon njega tako da ih postavis u let() konstruktoru*/
+    {
+	$$=let($2,$4,$6,$7);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @2;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@2);
+    }
+    |	',' OBJECTID ':' TYPEID IN expr %prec LET_PRECEDENCE 	/*BEZ ASSIGN EXPR,POSLJEDNJI IDENTIFIKATOR -> KREIRAMO POSLJEDNJI NESTANI let()*/
+    {
+	$$=let($2,$4,no_expr(),$6);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @2;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@2);
+    }
+    |	',' OBJECTID ':' TYPEID ASSIGN expr IN expr %prec LET_PRECEDENCE 	/*S ASSIGN EXPR,POSLJEDNJI IDENTIFIKATOR -> KREIRAMO POSLJEDNJI NESTANI let()*/
+    {
+	$$=let($2,$4,$6,$8);/*postavi expression na neterminal let_expression -> on ce se na koncu isto resolvat u let() konstruktor i na taj nacin cemo dobit nestane letove za svaki identifikator*/
+	@$ = @2;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@2);
+    }
+    | error let_expression
+    {
+	$$=$2;
+	@$ = @2;
+    	SET_NODELOC(@2);
+    }
+    ;
+
+/*lista case brancheva od barem 1 clana + na kraju izraza svakog brancha se nalazi ;*/
+    case_branches:	OBJECTID ':' TYPEID DARROW expr ';'	/*jedan branch ili prvi branch u nizu*/
+    {
+	$$=single_Cases(branch($1,$3,$5));
+	@$ = @1;/*postavi na liniju di se nalazi OBJECTID od identifikatora*/
+    	SET_NODELOC(@1);
+    }
+    | OBJECTID ':' TYPEID DARROW expr ';' case_branches
+    {
+	$$=append_Cases(single_Cases(branch($1,$3,$5)),$7);
+	@$ = @1;/*postavi na liniju di se nalazi trenutni branch*/
+    	SET_NODELOC(@1);
+    }
+    
+    /* end of grammar */
+    %%
+    
+    /* This function is called automatically when Bison detects a parse error. */
+    void yyerror(char *s)
+    {
+      extern int curr_lineno;
+      
+      cerr << "\"" << curr_filename << "\", line " << curr_lineno << ": " \
+      << s << " at or near ";
+      print_cool_token(yychar);
+      cerr << endl;
+      omerrs++;
+      
+      if(omerrs>50) {fprintf(stdout, "More than 50 errors\n"); exit(1);}
+    }
+    
+    

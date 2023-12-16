@@ -1,0 +1,435 @@
+/*
+ *  The scanner definition for COOL.
+ */
+
+/*
+ *  Stuff enclosed in %{ %} in the first section is copied verbatim to the
+ *  output, so headers and global definitions are placed here to be visible
+ * to the code in the file.  Don't remove anything that was here initially
+ */
+%{
+#include <cool-parse.h>
+#include <stringtab.h>
+#include <utilities.h>
+
+/* The compiler assumes these identifiers. */
+#define yylval cool_yylval
+#define yylex  cool_yylex
+
+/* Max size of string constants */
+#define MAX_STR_CONST 1025
+#define YY_NO_UNPUT   /* keep g++ happy */
+
+extern FILE *fin; /* we read from this file */
+
+/* define YY_INPUT so we read from the FILE fin:
+ * This change makes it possible to use this scanner in
+ * the Cool compiler.
+ */
+#undef YY_INPUT
+#define YY_INPUT(buf,result,max_size) \
+	if ( (result = fread( (char*)buf, sizeof(char), max_size, fin)) < 0) \
+		YY_FATAL_ERROR( "read() in flex scanner failed");
+
+char string_buf[MAX_STR_CONST]; /* to assemble string constants */
+char *string_buf_ptr;/*buffer u koji privremeno pohranjujemo sadrzaje stringa ako je sve ispravno*/
+
+extern int curr_lineno;
+extern int verbose_flag;
+
+extern YYSTYPE cool_yylval;
+
+/*
+ *  Add Your own definitions here
+ */
+/*KORISNICKE FUNKCIJE -> UNUTAR STRDUP FUNKCIJE U cool-parse.h se koriste strlen i strcpy pa ih i ovde mozemo koristit*/
+int add_to_string_buffer(char* string_to_add)
+{
+	/*OPREZ -> string_buf je niz od MAX_STR_CONST znakova -> funkcije strlen ne uracunavaju \0 karakter sta znaci da naš string zapravo moze imat MAX_STR_CONST-1 karaktera jer je zadnji clan niza rezerviran za null karakter -> zato +1*/
+	if((strlen(string_buf)+strlen(string_to_add)+1)>MAX_STR_CONST)
+	{
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		return 0;/*string too long greska*/
+	}
+	else {
+		/*inace nadodaj na prethodno spremljene karaktere u bufferu*/
+		strcat(string_buf,string_to_add);
+		return 1;/*sve proslo dobro*/
+	}
+}
+/*povratni tip je int jer je ERROR token kojemu je pridjeljena int vrijednost*/
+int error_logger(char* error_message)
+{
+	cool_yylval.error_msg=error_message;
+	return(ERROR);
+}
+
+int current_comment_depth=0;/*pratimo dubinu komentara kod nested komentara*/
+
+%}
+
+/*
+ * Define names for regular expressions here.
+ */
+
+/*Define case insesitive letters*/
+
+a	[aA]
+b	[bB]
+c	[cC]
+d	[dD]
+e	[eE]
+f	[fF]
+g	[gG]
+h	[hH]
+i	[iI]
+j	[jJ]
+k	[kK]
+l	[lL]
+m	[mM]
+n	[nN]
+o	[oO]
+p	[pP]
+q	[qQ]
+r	[rR]
+s	[sS]
+t	[tT]
+u	[uU]
+v	[vV]
+w	[wW]
+x	[xX]
+y	[yY]
+z	[zZ]
+
+
+/*State definitions*/
+%START ENCLOSED_COMMENTS DASHED_COMMENTS STRING STRING_CONTINUE_PARSING_AFTER_ERROR
+
+%%
+
+ /*
+  *  Nested comments
+  */
+
+
+ /*
+  *  The multiple-character operators.
+  */
+
+ /*
+  * Keywords are case-insensitive except for the values true and false,
+  * which must begin with a lower-case letter.
+  */
+
+<INITIAL>{
+	/*SKIP WHITESPACE -> PRIPAZI -> PRVI ZNAK OZNAČAV SPACE I NIJE SLUČAJNO OSTAVLJEN*/
+	[ \f\t\v\r]+	;
+	/*COUNT LINE NUMBER-> brojimo svako pojavljivanje znaka nove linije \n VIDI STA S OVIN OSTALIMA \r\n na windows)-> carriage return \r(nisan siguran) ili CRLF \r\n*/
+	/*Takoder brojimo linije i u stanju string(jer string moze ic na vise linija) i comment(komentar moze ic na vise linija)*/
+	\n	{ curr_lineno++;}
+	/*CASE-INSENSITIVE KEYWORDS*/
+	
+	{c}{l}{a}{s}{s}		{ return (CLASS);}
+	{e}{l}{s}{e}		{ return (ELSE);}
+	{f}{i}			{ return (FI);}
+	{i}{f}			{ return (IF);}
+	{i}{n}			{ return (IN);}
+	{i}{n}{h}{e}{r}{i}{t}{s}	{ return (INHERITS);}
+	{l}{e}{t}		{ return (LET);}
+	{l}{o}{o}{p}		{ return (LOOP);}
+	{p}{o}{o}{l}		{ return (POOL);}
+	{t}{h}{e}{n}		{ return (THEN);}
+	{w}{h}{i}{l}{e}		{ return (WHILE);}
+	{c}{a}{s}{e}		{ return (CASE);}
+	{e}{s}{a}{c}		{ return (ESAC);}
+	{o}{f}			{ return (OF);}
+	{n}{e}{w}		{ return (NEW); }
+	{i}{s}{v}{o}{i}{d}	{ return (ISVOID);}
+	{n}{o}{t}		{ return (NOT);}
+	
+	/*CASE-SENSITIVE KEYWORDS -> must begin with a lower-case letter + token value*/
+	t{r}{u}{e}		{ cool_yylval.boolean=1; return (BOOL_CONST);}
+	f{a}{l}{s}{e}		{ cool_yylval.boolean=0; return (BOOL_CONST);}
+	
+	/*INTEGERS*/
+	[0-9]+		{cool_yylval.symbol=inttable.add_string (yytext);return (INT_CONST);}
+	
+	/*STRINGS -> STR_CONST*/
+	/* kad smo u stanju initial i naiđemo na znak " to je početni znak stringa, uđi u string stanje, dok ne izađemo iz njega unutar stringa smo*/
+	/*u njega spremamo dijelove stringova koje citamo -> kad naidemo na ovaj string postavimo ga na prazan string*/
+	\"	{BEGIN(STRING);strcpy(string_buf,"");}
+	
+	/*IDENTIFIERS:  Identifiers are strings (other than keywords) consisting of
+	letters, digits, and the underscore character*/
+	/*Type identifiers begin with a capital letter, ovde ce upast posebni identifikator SELF_TYPE*/
+	[A-Z][a-zA-Z0-9_]*	{cool_yylval.symbol=idtable.add_string(yytext); return (TYPEID);}
+	
+	/*Object identifiers begin with a lower case letter, ovde ce upast posebni identifikator self*/
+	[a-z][a-zA-Z0-9_]*	{cool_yylval.symbol=idtable.add_string(yytext); return (OBJECTID);}
+	
+	
+	/*COMMENTS*/
+	/*There are two forms of comments in Cool. */
+	/*Any characters between two dashes “--” and the next newline
+	(or EOF, if there is no next newline) are treated as comments.*/ 
+	"--"	{BEGIN(DASHED_COMMENTS);}
+	/*Comments may also be written by enclosing text in (∗ . . . ∗). The latter form of comment may be nested -> potrebno vodit racuna koliko imamo komentara odnosno parova (* i *) -> mora biti jednak broj. Comments cannot cross file boundaries.*/
+	/*current_comment_depth ce uvijek bit 0 u initial stateu ako je broj zagrada (* i *) jedank, ako je veci onda će sve bit komentar a ako je manji onda ce uc u ovi drugi dio di ce ispisivat gresku*/
+	\(\*	{current_comment_depth++;BEGIN(ENCLOSED_COMMENTS);}
+	/*Ako naletimo na *) u stanju INITIAL znaci da prethodno nije bilo *) -> veci broj *) nego (* -> nije dozvoljeno -> prijavimo grešku "Unmatched *)", za dashed di god naiđemo na -- je početak, nema ovih problema"*/
+	\*\)	{return error_logger("Unmatched *).");}
+
+	/*Tokeni za simbole koji imaju samo jedan znak (npr. ; i ,) su ujedno ASCII vrijednost samog znaka -> vratimo vrijednost znaka kao token*/
+	"."	{return (int)yytext[0];}
+	";"	{return (int)yytext[0];}
+	","	{return (int)yytext[0];}
+	":"	{return (int)yytext[0];}
+	"{"	{return (int)yytext[0];}
+	"}"	{return (int)yytext[0];}
+	"("	{return (int)yytext[0];}
+	")"	{return (int)yytext[0];}
+	"+"	{return (int)yytext[0];}
+	"-"	{return (int)yytext[0];}
+	"*"	{return (int)yytext[0];}
+	"/"	{return (int)yytext[0];}
+	"~"	{return (int)yytext[0];}
+	"<"	{return (int)yytext[0];}
+	"="	{return (int)yytext[0];}
+	"@"	{return (int)yytext[0];}
+
+	/*Posebni simboli/operatori*/
+	=\>	{ return (DARROW);}
+	\<\- 	{ return (ASSIGN);}
+	\<=	{ return (LE);}
+
+	/*Kada se naiđe na nevažeći znak (onaj kojim ne započinje niti jedan token), kao string 
+	greške treba vratiti string koji sadrži samo taj znak. Leksiranje treba nastaviti sa 
+	sljedećim znakom*/
+	.	{return error_logger(yytext);}
+}
+
+	/*pripazit -> "*)" znaci kraj komentara dok kad imamo \*) escapana zvjezdica znaci da * nema svoje standardno znacenje u komentaru nego je sadržaj komentara -> preskoči je kao i ostale znakove, *\) nece matchat kao kraj (mora bit "*)" pa nemamo s tim problem*/
+	/*ISTA STVAR I SA "(*" -> AKO IMAMO \(* ONDA TO NIJE POČETAK KOMENTARA -> kad naiđemo na escapane \( i \* preskacemo ih -> zadnje pravilo */
+	/*ISTO TAKO POTREBNO VODIT RAČUNA O UGNIJEŽĐENIM KOMENTARIMA -> MORAMO ZNAT KOJA ZAGRADA *) SE ODNOSI NA KOJI (* I MORA IH BIT ISTI BROJ -> DUBINA KOMENTARA
+	-> KADA NAIĐEMO NA ZNAK (* UVEĆAVAMO COUNTER A KADA NAIĐEMO NA *) SMANJIMO GA -> AKO JE REZULTAT 0 -> IZLAZIMO U POČETNO STANJE, AKO JE PREVIŠE *) ONDA CE U INITIAL JAVIT "Unmatched *) a ko ih je premalo onda će sve bit komentar do kraja */
+<ENCLOSED_COMMENTS>{
+	\*\)	{
+		current_comment_depth--;/*smanji counter -> pronašli par otvorenih i zatvorenih zagrada*/
+		/*ako je counter došao na 0 -> sparili sve otvorene sa zatvorenima -> proglasi kraj komentara -> idi u početno stanje*/
+		if(current_comment_depth==0)
+		{
+			//ne triba resetirat counter na 0 jer vec je 0
+			BEGIN(INITIAL);
+		}
+	}
+	\(\*	{
+		current_comment_depth++;
+	}
+	<<EOF>>	{BEGIN(INITIAL);return error_logger("EOF in comment.");}
+	\n	{ curr_lineno++;}
+	\\\*|\\\(|.	;
+}
+
+<DASHED_COMMENTS>{
+	<<EOF>>	{BEGIN(INITIAL);}
+	\n	{curr_lineno++;BEGIN(INITIAL);}
+	.	;
+}
+
+<STRING>{
+	/* izlazak iz string stanja -> tek kada uočimo drugi znak " ALI POTREBNO PAZIT JE LI ESCAPAN ILI NIJE -> ako je escapan onda zapisat njega kao clan stringa */
+\" 	{
+	/*AKO SMO DOSLI DO OVDE ONDA NIJE BILO ERRORA UNUTAR STRINGA I SVE JE DOBRO PROSLO
+	UNUTAR string_buf se nalazi vrijednost stringa koju trebamo spremit*/
+	BEGIN(INITIAL);
+	cool_yylval.symbol=stringtable.add_string(string_buf);
+	return(STR_CONST);
+}
+
+	/*puni buffer ako ima valjanih znakova -> mora bit niz od barem 1 znaka gdje nema escape \(jer te slucajeve obradujemo doli posebno)," karakter(jer bi njega inace isto uracunalo pa bi ovo pravilo imalo prednost pred onim gornjim za qoute i izlazak iz stringa jer je duzi niz) i ostali karakteri koji ne sme bit u stringu(EOF NEĆE UPAST U OVI DIO JER NJEGA FLEX PREPOZNAJE ZASEBNO PREKO <<EOF>> TOKENA) */
+[^\\\"\n\0]+ {
+	/*ovo ce dopustit \b,t,f karaktere KOJI NISU ESCAPANI -> bit ce dio stringa sta je i u redu*/
+	if(!add_to_string_buffer(yytext))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+ /*
+	Within a string, a sequence ‘\c’ denotes the character ‘c’,
+	with the exception of the following:
+	\b backspace
+	\t tab
+	\n newline
+	\f formfeed
+*/
+	/*HANDLEAJ SVE SLUCAJEVE SA ESCAPE ZNAKOM \ */
+	/*ako ima escapan qoute " -> potrebno pohranit njega kao dio stringa*/
+	/*Hvatamo escapani qoute -> ima prednost pred gornjim di je samo qoute jer uzima vise znakova*/
+	/*POKRIVAMO I SLUCAJ -> Međutim, slijed od dva znaka \0 je dopušten, ali ga treba pretvoriti u jedan znak 0. -> AKO UOCIMO \ I 0 kao 2 odvojena znaka onda ih pretvaramo u 0*/
+	/*Slucajeve koje izuzimamo obradujemo naknadno*/
+\\[^btnf\b\t\n\f\0]	{
+	/*ovo ce pokrit slucaj kad escapamo escape znak -> \\ ce se prevest u jedan \*/
+	char tmp_str[2];
+	tmp_str[0]=yytext[yyleng-1];
+	tmp_str[1]='\0';
+	if(!add_to_string_buffer(tmp_str))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+	/*dodaj slucajeve kada su napisana dva znaka \n da se pretvore u 1 znak nove linije i tako za ostala slova*/
+\\n	{
+	if(!add_to_string_buffer("\n"))
+	{	
+		/*uvecaj brojac linija*/
+		curr_lineno++;
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+\\b	{
+	if(!add_to_string_buffer("\b"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+\\t	{
+	if(!add_to_string_buffer("\t"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+\\f	{
+	if(!add_to_string_buffer("\f"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+ 	/*ako imamo escapan znak nove linije ubaci ga kao 1 znak nove linije u string*/
+\\\n	{
+	if(!add_to_string_buffer("\n"))
+	{	
+		/*uvecaj brojac linija*/
+		curr_lineno++;
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+	/*ako imamo escapane znakove \b,\t,\f ista stvar ubaci ga kao 1 znak string*/
+\\\b	{
+	if(!add_to_string_buffer("\b"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+\\\t	{
+	if(!add_to_string_buffer("\t"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+\\\f	{
+	if(!add_to_string_buffer("\f"))
+	{
+		/*String too long greska -> funkcija vratila 0*/
+		/*Kada je string predugačak, prijavite pogrešku s porukom String constant too 
+		long.*/
+		/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+		BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+		return error_logger("String constant too long.");
+	}
+}
+
+	/*Ako niz sadrži nevažeće znakove (naprimjer, znak s ASCII kodom 0), prijavite to kao String contains null character*/
+\0	{
+	/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+	BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+	return error_logger("String contains null character.");
+}
+	/*Escapani null karakter nije dozvoljen -> POSEBNI ERROR za njega(inace bi ga skuzija i sami izraz za null karakter jer bi se nalazija nakon escapea) -> "String contains escaped null character."*/
+\\\0	{
+	/*Potrebno nastavit parsiranje ili od nove linije ili od kraja string znaka -> ulazimo u taj state*/
+	BEGIN(STRING_CONTINUE_PARSING_AFTER_ERROR);
+	return error_logger("String contains escaped null character.");
+}
+	
+	/*kad naide na EOF unutar stringa prestani s citanjem i leksiranjem*/
+<<EOF>>	{BEGIN(INITIAL);return error_logger("EOF in string constant.");}
+
+	/*Ako string sadrži ASCII znak za novi red (ne u obliku escape sekvence), prijavite tu grešku
+	 s porukom Unterminated string constant i nastavite leksiranje sa početkom
+	sljedećeg retka -> buduci da je rijec o newline characteru iduci char je vec u novom retku pa samo nastavljamo*/
+\n	{curr_lineno++;BEGIN(INITIAL);return error_logger("Unterminated string constant.");}
+
+}
+
+<STRING_CONTINUE_PARSING_AFTER_ERROR>{
+	/* U oba ova slučaja nastavite leksiranje nakon 
+	završetka stringa. Kraj stringa niza definira se kao jedno od slijedećeg:
+	->ako se nakon pogreške pojavi ASCII znak nove linije, onda je to kraj stringa 
+	->ako se nakon pogreške, a prije ASCII znaka nove linije pojavi znak ” onda je to kraj stringa 
+	-> SVE ZNAKOVE DOTADA IGNORIRATI
+	*/
+\n	{		
+	/*uvecaj brojac linija*/
+	curr_lineno++;
+	BEGIN(INITIAL);
+}
+
+\"	{BEGIN(INITIAL);}
+
+<<EOF>> {BEGIN(INITIAL);}
+
+.	;
+}
+%%
